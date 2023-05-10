@@ -423,11 +423,11 @@ fn check_one_checkfile(
     }
 }
 
-fn is_gitdir(entry: &DirEntry) -> bool {
+fn is_ignored_dir(entry: &DirEntry) -> bool {
     entry
         .file_name()
         .to_str()
-        .map(|s| s == ".git")
+        .map(|s| s == ".git" || s == "node_modules" || s == "target")
         .unwrap_or(false)
 }
 
@@ -450,10 +450,9 @@ fn main() -> Result<(), HashError> {
         if opt.check {
             ok_checks = check_one_checkfile(&input_path, &hasher, opt.quiet, &mut files_failed)?;
         } else {
-            // Note that file_args automatically includes `-` if nothing is given.
             for entry in WalkDir::new(&input_path)
                 .into_iter()
-                .filter_entry(|e| !is_gitdir(e))
+                .filter_entry(|e| !is_ignored_dir(e))
                 .filter_map(|e| e.ok())
                 .filter(|e| !e.file_type().is_dir())
                 .filter(|e| !e.path_is_symlink())
