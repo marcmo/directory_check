@@ -6,11 +6,12 @@ use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use thiserror::Error;
 use walkdir::{DirEntry, WalkDir};
-
 #[derive(Debug, StructOpt)]
-#[structopt(name = "dir_check", about = "Calculate checksum of directory content")]
+#[structopt(name = "dircheck", about = "Calculate checksum of directory content")]
 struct Opt {
     /// Activate checking mode
+    /// in checking mode the input needs to be a file that was
+    /// created while running this tool on a folder
     #[structopt(short, long)]
     check: bool,
 
@@ -18,7 +19,9 @@ struct Opt {
     #[structopt(short, long)]
     quiet: bool,
 
-    /// Output file, stdout if not present
+    /// Input file
+    /// in checking mode: file that contains the checksums of all files
+    /// in creating mode: folder that should be used to create the checksum for all files within
     #[structopt(parse(from_os_str))]
     input: PathBuf,
 }

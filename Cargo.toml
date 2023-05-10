@@ -1,13 +1,13 @@
 [package]
-name = "directory_check"
-version = "0.1.0"
+name = "dircheck"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
 blake3 = { version = "1", features = ["rayon"] }
-memmap2 = "0.5.3"
-rayon = "1.2.1"
-thiserror = "1.0"
 hex = "0.4"
-walkdir = "2.3"
+memmap2 = "0.5.10"
+rayon = "1.7"
 structopt = "0.3"
+thiserror = "1.0"
+walkdir = "2.3"
