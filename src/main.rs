@@ -5,6 +5,7 @@ use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use thiserror::Error;
+use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dir_check", about = "Calculate checksum of directory content")]
@@ -24,8 +25,10 @@ struct Opt {
 
 #[derive(Error, Debug)]
 pub enum HashError {
-    #[error("parsing stopped, cannot continue: {0}")]
+    #[error("Unrecoverable error, cannot continue: {0}")]
     Unrecoverable(String),
+    #[error("Entry could not be processed: {0}")]
+    Entry(String),
     #[error("IO error: {0:?}")]
     Io(#[from] std::io::Error),
 }
@@ -288,13 +291,13 @@ fn parse_check_line(mut line: &str) -> Result<ParsedCheckLine, HashError> {
     let hash_hex_len = 2 * blake3::OUT_LEN;
     let num_spaces = 2;
     let prefix_len = hash_hex_len + num_spaces;
-    if line.len() > prefix_len {
+    if line.len() <= prefix_len {
         return Err(HashError::Unrecoverable("Short line".to_string()));
     }
-    if line.chars().take(prefix_len).all(|c| c.is_ascii()) {
+    if line.chars().take(prefix_len).any(|c| !c.is_ascii()) {
         return Err(HashError::Unrecoverable("Non-ASCII prefix".to_string()));
     }
-    if &line[hash_hex_len..][..2] == "  " {
+    if &line[hash_hex_len..][..2] != "  " {
         return Err(HashError::Unrecoverable("Invalid space".to_string()));
     }
     // Decode the hash hex.
@@ -324,8 +327,11 @@ fn parse_check_line(mut line: &str) -> Result<ParsedCheckLine, HashError> {
 }
 
 fn hash_one_input(path: &Path, base_hasher: &blake3::Hasher) -> Result<(), HashError> {
-    let mut input = Input::open(path)?;
-    let output = input.hash(base_hasher)?;
+    let mut input = Input::open(path)
+        .map_err(|e| HashError::Entry(format!("Could not open file: {path:?} ({e})")))?;
+    let output = input
+        .hash(base_hasher)
+        .map_err(|e| HashError::Entry(format!("Could not hash file: {path:?} ({e})")))?;
     let FilepathString {
         filepath_string,
         is_escaped,
@@ -333,7 +339,9 @@ fn hash_one_input(path: &Path, base_hasher: &blake3::Hasher) -> Result<(), HashE
     if is_escaped {
         print!("\\");
     }
-    write_hex_output(output)?;
+    write_hex_output(output).map_err(|e| {
+        HashError::Entry(format!("Could not write hex output file: {path:?} ({e})"))
+    })?;
     println!("  {}", filepath_string);
     Ok(())
 }
@@ -391,15 +399,16 @@ fn check_one_checkfile(
     hasher: &blake3::Hasher,
     quiet: bool,
     files_failed: &mut u64,
-) -> Result<(), HashError> {
+) -> Result<usize, HashError> {
     let checkfile_input = Input::open(path)?;
     let mut bufreader = io::BufReader::new(checkfile_input);
     let mut line = String::new();
+    let mut checked_successfully = 0usize;
     loop {
         line.clear();
         let n = bufreader.read_line(&mut line)?;
         if n == 0 {
-            return Ok(());
+            return Ok(checked_successfully);
         }
         // check_one_line() prints errors and turns them into a success=false
         // return, so it doesn't return a Result.
@@ -408,47 +417,70 @@ fn check_one_checkfile(
             // We use `files_failed > 0` to indicate a mismatch, so it's important for correctness
             // that it's impossible for this counter to overflow.
             *files_failed = files_failed.saturating_add(1);
+        } else {
+            checked_successfully += 1;
         }
     }
 }
 
+fn is_gitdir(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s == ".git")
+        .unwrap_or(false)
+}
+
 fn main() -> Result<(), HashError> {
     let opt = Opt::from_args();
-    let folder_path = opt.input;
+    let input_path = opt.input;
     let hasher = blake3::Hasher::new();
-    if !folder_path.is_dir() {
-        panic!("no such folder: {folder_path:?}")
+    if !opt.check && !input_path.is_dir() {
+        panic!("calculating for folder: no such folder: {input_path:?}")
+    } else if opt.check && input_path.is_dir() {
+        panic!("checking checksums for input: no such file: {input_path:?}")
     }
     let thread_pool_builder = rayon::ThreadPoolBuilder::new();
     let thread_pool = thread_pool_builder
         .build()
         .map_err(|e| HashError::Unrecoverable(format!("Could not create threadpool: {e}")))?;
-    use walkdir::WalkDir;
     thread_pool.install(|| {
         let mut files_failed = 0u64;
-        // Note that file_args automatically includes `-` if nothing is given.
-        for entry in WalkDir::new(&folder_path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| !e.file_type().is_dir())
-        {
-            if opt.check {
-                check_one_checkfile(entry.path(), &hasher, opt.quiet, &mut files_failed)?;
-            } else {
+        let mut ok_checks = 0usize;
+        if opt.check {
+            ok_checks = check_one_checkfile(&input_path, &hasher, opt.quiet, &mut files_failed)?;
+        } else {
+            // Note that file_args automatically includes `-` if nothing is given.
+            for entry in WalkDir::new(&input_path)
+                .into_iter()
+                .filter_entry(|e| !is_gitdir(e))
+                .filter_map(|e| e.ok())
+                .filter(|e| !e.file_type().is_dir())
+                .filter(|e| !e.path_is_symlink())
+            {
                 let result = hash_one_input(entry.path(), &hasher);
                 if let Err(e) = result {
                     files_failed = files_failed.saturating_add(1);
-                    eprintln!("{}: {}: {}", NAME, entry.path().to_string_lossy(), e);
+                    eprintln!("==> {}: {}: {}", NAME, entry.path().to_string_lossy(), e);
                 }
             }
         }
-        if opt.check && files_failed > 0 {
-            eprintln!(
-                "{}: WARNING: {} computed checksum{} did NOT match",
-                NAME,
-                files_failed,
-                if files_failed == 1 { "" } else { "s" },
-            );
+        if opt.check {
+            if files_failed > 0 {
+                eprintln!(
+                    "{}: WARNING: {} computed checksum{} did NOT match",
+                    NAME,
+                    files_failed,
+                    if files_failed == 1 { "" } else { "s" },
+                );
+            } else {
+                println!(
+                    "{}: SUCCESS: {} computed checksum{} did match",
+                    NAME,
+                    ok_checks,
+                    if ok_checks == 1 { "" } else { "s" },
+                );
+            }
         }
         std::process::exit(if files_failed > 0 { 1 } else { 0 });
     })
