@@ -7,7 +7,7 @@ use structopt::StructOpt;
 use thiserror::Error;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "example", about = "An example of StructOpt usage.")]
+#[structopt(name = "dir_check", about = "Calculate checksum of directory content")]
 struct Opt {
     /// Activate checking mode
     #[structopt(short, long)]
@@ -29,7 +29,7 @@ pub enum HashError {
     #[error("IO error: {0:?}")]
     Io(#[from] std::io::Error),
 }
-const NAME: &str = "b3sum";
+const NAME: &str = "dirsum";
 
 enum Input {
     Mmap(io::Cursor<memmap2::Mmap>),
@@ -351,7 +351,7 @@ fn check_one_line(line: &str, hasher: &blake3::Hasher, quiet: bool) -> bool {
     } = match parse_result {
         Ok(parsed) => parsed,
         Err(e) => {
-            eprintln!("{}: {}", NAME, e);
+            eprintln!("---> {}: {}", NAME, e);
             return false;
         }
     };
@@ -430,6 +430,7 @@ fn main() -> Result<(), HashError> {
         for entry in WalkDir::new(&folder_path)
             .into_iter()
             .filter_map(|e| e.ok())
+            .filter(|e| !e.file_type().is_dir())
         {
             if opt.check {
                 check_one_checkfile(entry.path(), &hasher, opt.quiet, &mut files_failed)?;
