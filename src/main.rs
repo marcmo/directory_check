@@ -158,7 +158,7 @@ fn write_hex_output(mut output: blake3::OutputReader) -> Result<(), HashError> {
     let mut block = [0; blake3::guts::BLOCK_LEN];
     while len > 0 {
         output.fill(&mut block);
-        let hex_str = hex::encode(&block[..]);
+        let hex_str = const_hex::encode(&block[..]);
         let take_bytes = cmp::min(len, block.len() as u64);
         print!("{}", &hex_str[..2 * take_bytes as usize]);
         len -= take_bytes;
